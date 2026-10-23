@@ -17,7 +17,7 @@ import { updateKnowledgeBase } from './knowledgeUpdater';
 // ============ CONFIGURATION ============
 
 const AGENT_LEVEL: 'alto' | 'medio' | 'bajo' = 'alto';
-const LOOP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const LOOP_INTERVAL_MS = 10 * 60 * 60 * 1000; // 10 hours
 const MAX_CONFIDENCE_THRESHOLD = 70;
 
 // Minimum threshold to operate — below this, HOLD
