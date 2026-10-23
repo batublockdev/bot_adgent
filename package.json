@@ -1,0 +1,28 @@
+{
+  "name": "celo-investment-agent",
+  "version": "1.0.0",
+  "description": "Celo Investment Agent — autonomous DeFi trading on Celo mainnet",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts"
+  },
+  "keywords": ["celo", "defi", "uniswap", "aave", "autonomous-agent"],
+  "author": "batublockdev",
+  "license": "ISC",
+  "dependencies": {
+    "@celo/attribution-tags": "^0.5.0",
+    "@celo/client": "^0.0.419",
+    "dotenv": "^18.0.8",
+    "openai": "^7.38.0",
+    "pg": "^8.16.0",
+    "typescript": "^7.0.2",
+    "viem": "^2.57.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.23.15"
+  }
+}

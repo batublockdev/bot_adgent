@@ -1,0 +1,15 @@
+node_modules/
+dist/
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+check-adgent.ts
+debug-*.ts
+diagnose.ts
+get-balance.js
+manual-swap.mts
+send-from-eoa.ts
+test-approve.ts
