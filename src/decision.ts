@@ -1,3 +1,4 @@
+import { webcrypto } from 'node:crypto';
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
 import { wrapFetchWithPaymentFromConfig } from '@x402/fetch';
@@ -7,6 +8,11 @@ import { agentAccount } from './client';
 import { MINIMAL_ACCOUNT } from './executor';
 
 dotenv.config();
+
+if (!globalThis.crypto?.subtle) {
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+  console.warn(`[LLM] Web Crypto global unavailable in ${process.version}; using node:crypto.webcrypto`);
+}
 
 // ============ CLIENTE X402 / AGENT402 (PROVEEDOR PRIMARIO) ============
 // Paga por inferencia con USDC en Celo mainnet mediante x402 v2 ($0.003 / req)
