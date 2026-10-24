@@ -218,9 +218,24 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
   // Modelo: DeepSeek-V3 (deepseek-chat)
   // ==========================================
   let x402Msg = '';
+
   if (x402Client && X402_LLM_URL) {
+    const startedAt = Date.now();
+
+    console.log('\n========== DEBUG X402 / AGENT402 ==========');
+    console.log('[X402] URL:', X402_LLM_URL);
+    console.log('[X402] Modelo:', X402_MODEL);
+    console.log('[X402] Cliente disponible:', Boolean(x402Client));
+    console.log('[X402] Mensajes:', messages.length);
+    console.log(
+      '[X402] Tamaño aproximado de mensajes:',
+      Buffer.byteLength(JSON.stringify(messages), 'utf8'),
+      'bytes'
+    );
+
     try {
-      console.log(`🤖 [LLM] Consultando proveedor principal x402 (Agent402): ${X402_MODEL} (${X402_LLM_URL})...`);
+      console.log('[X402] Enviando solicitud...');
+
       const completion = await x402Client.chat.completions.create({
         model: X402_MODEL,
         messages,
@@ -228,17 +243,69 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
         response_format: { type: 'json_object' },
       });
 
-      const raw = completion.choices[0]?.message?.content || '{}';
-      console.log(`📥 [x402 DeepSeek] Respuesta:\n${raw}`);
+      console.log('[X402] Solicitud exitosa');
+      console.log('[X402] Tiempo:', Date.now() - startedAt, 'ms');
+      console.log('[X402] ID:', completion.id);
+      console.log('[X402] Modelo devuelto:', completion.model);
+      console.log(
+        '[X402] Finish reason:',
+        completion.choices?.[0]?.finish_reason
+      );
+      console.log('[X402] Uso:', completion.usage);
+
+      const content = completion.choices?.[0]?.message?.content;
+      const raw = typeof content === 'string' ? content : '{}';
+
+      console.log('[X402] Respuesta recibida:\n', raw);
+
+      if (!raw || raw === '{}') {
+        console.warn('[X402] La respuesta llegó vacía o sin contenido.');
+      }
+
       return parseDecisionJson(raw, 'x402-DeepSeek', ctx.level);
-    } catch (x402Error: any) {
-      x402Msg = x402Error?.message || String(x402Error);
-      console.warn(`\n⚠️ [LLM] x402 / Agent402 falló: ${x402Msg}`);
-      console.log(`🔄 [LLM] Activando fallback 1 a Ollama Cloud...`);
+    } catch (error: unknown) {
+      const err = error as {
+        name?: string;
+        message?: string;
+        stack?: string;
+        status?: number;
+        code?: string;
+        type?: string;
+        cause?: unknown;
+        headers?: unknown;
+        error?: unknown;
+      };
+
+      x402Msg = err?.message || String(error);
+
+      console.error('\n[X402] ❌ SOLICITUD FALLIDA');
+      console.error('[X402] Tiempo hasta el error:', Date.now() - startedAt, 'ms');
+      console.error('[X402] Nombre:', err?.name);
+      console.error('[X402] Mensaje:', err?.message);
+      console.error('[X402] Código:', err?.code);
+      console.error('[X402] Tipo:', err?.type);
+      console.error('[X402] Estado HTTP:', err?.status);
+      console.error('[X402] Causa:', err?.cause);
+      console.error('[X402] Error interno:', err?.error);
+      console.error('[X402] Stack:', err?.stack);
+
+      // Algunas versiones del SDK exponen estos campos;
+      // otras no. No imprimimos cabeceras de pago ni credenciales.
+      if (err?.headers) {
+        console.error('[X402] Cabeceras disponibles:', err.headers);
+      }
+
+      console.warn('[X402] Activando fallback a Ollama Cloud...');
     }
+
   } else {
-    x402Msg = 'X402_LLM_URL no configurado o cliente no disponible';
+    x402Msg = !X402_LLM_URL
+      ? 'X402_LLM_URL no configurado'
+      : 'x402Client no está inicializado';
+
+    console.error('[X402] No se ejecutó la llamada:', x402Msg);
   }
+
 
   // ==========================================
   // 2. FALLBACK 1: OLLAMA CLOUD
