@@ -18,6 +18,7 @@ if (!globalThis.crypto?.subtle) {
 // Paga por inferencia con USDC en Celo mainnet mediante x402 v2 ($0.003 / req)
 const X402_LLM_URL = process.env.X402_LLM_URL || 'https://agent402.tools/v1/nano';
 const X402_MODEL = process.env.X402_MODEL || 'deepseek-chat';
+const X402_NANO_MAX_INPUT_CHARS = 11_000;
 
 let x402Client: OpenAI | null = null;
 try {
@@ -204,20 +205,52 @@ function parseDecisionJson(raw: string, providerName: string, defaultLevel: 'alt
  * First tries Ollama Cloud. If it hits limits or errors, falls back to Google Gemini free tier.
  */
 export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> {
-  const combinedSystemPrompt = [
-    ctx.systemPrompt,
-    `CURRENT STATE:\n${ctx.currentState}`,
-    `MARKET DATA:\n${ctx.marketData}`,
-    `RELEVANT HISTORY:\n${ctx.history}`,
-    `RULES:\n${ctx.rules}`,
-  ].join('\n\n========================================\n\n');
-
   const combinedUserPrompt = `${ctx.userPrompt}\n\nCRITICAL: Respond ONLY with a valid JSON object matching the format: {"action":"swap"|"supply"|"borrow"|"repay"|"withdraw"|"swap_and_supply"|"hold"|"request_approval"|"request_setup","tokenIn":"...","tokenOut":"...","amount":"...","reason":"...","confidence":0-100,"level":"alto"|"medio"|"bajo"}`;
 
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: 'system', content: combinedSystemPrompt },
+  const createMessages = (history: string): OpenAI.Chat.ChatCompletionMessageParam[] => [
+    {
+      role: 'system',
+      content: [
+        ctx.systemPrompt,
+        `CURRENT STATE:\n${ctx.currentState}`,
+        `MARKET DATA:\n${ctx.marketData}`,
+        `RELEVANT HISTORY:\n${history}`,
+        `RULES:\n${ctx.rules}`,
+      ].join('\n\n========================================\n\n'),
+    },
     { role: 'user', content: combinedUserPrompt },
   ];
+
+  const messages = createMessages(ctx.history);
+  let x402Messages = messages;
+  let x402InputChars = JSON.stringify(x402Messages).length;
+
+  if (x402InputChars > X402_NANO_MAX_INPUT_CHARS) {
+    const marker = '\n[Earlier and less relevant history omitted to fit the x402 nano input limit.]\n';
+    const retainHistory = (length: number): string => {
+      if (length === 0) return '';
+      const headLength = Math.ceil(length / 2);
+      const tailLength = Math.floor(length / 2);
+      const tail = tailLength > 0 ? ctx.history.slice(-tailLength) : '';
+      return `${ctx.history.slice(0, headLength)}${marker}${tail}`;
+    };
+    let low = 0;
+    let high = ctx.history.length;
+
+    while (low < high) {
+      const retained = Math.ceil((low + high) / 2);
+      const candidate = createMessages(retainHistory(retained));
+
+      if (JSON.stringify(candidate).length <= X402_NANO_MAX_INPUT_CHARS) {
+        low = retained;
+      } else {
+        high = retained - 1;
+      }
+    }
+
+    x402Messages = createMessages(retainHistory(low));
+    x402InputChars = JSON.stringify(x402Messages).length;
+  }
 
   // ==========================================
   // 1. INTENTO PRIMARIO: X402 / AGENT402 (PAGO EN USDC EN CELO MAINNET)
@@ -226,82 +259,88 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
   let x402Msg = '';
 
   if (x402Client && X402_LLM_URL) {
-    const startedAt = Date.now();
+    if (x402InputChars > X402_NANO_MAX_INPUT_CHARS) {
+      x402Msg = `Required context exceeds the x402 nano limit (${x402InputChars}/${X402_NANO_MAX_INPUT_CHARS} characters) even after removing history`;
+      console.warn(`[X402] ${x402Msg}; skipping nano request.`);
+    } else {
+      const startedAt = Date.now();
 
-    console.log('\n========== DEBUG X402 / AGENT402 ==========');
-    console.log('[X402] URL:', X402_LLM_URL);
-    console.log('[X402] Modelo:', X402_MODEL);
-    console.log('[X402] Cliente disponible:', Boolean(x402Client));
-    console.log('[X402] Mensajes:', messages.length);
-    console.log(
-      '[X402] Tamaño aproximado de mensajes:',
-      Buffer.byteLength(JSON.stringify(messages), 'utf8'),
-      'bytes'
-    );
-
-    try {
-      console.log('[X402] Enviando solicitud...');
-
-      const completion = await x402Client.chat.completions.create({
-        model: X402_MODEL,
-        messages,
-        temperature: 0.3,
-        response_format: { type: 'json_object' },
-      });
-
-      console.log('[X402] Solicitud exitosa');
-      console.log('[X402] Tiempo:', Date.now() - startedAt, 'ms');
-      console.log('[X402] ID:', completion.id);
-      console.log('[X402] Modelo devuelto:', completion.model);
+      console.log('\n========== DEBUG X402 / AGENT402 ==========');
+      console.log('[X402] URL:', X402_LLM_URL);
+      console.log('[X402] Modelo:', X402_MODEL);
+      console.log('[X402] Cliente disponible:', Boolean(x402Client));
+      console.log('[X402] Mensajes:', x402Messages.length);
+      console.log('[X402] Entrada x402 nano:', `${x402InputChars}/${X402_NANO_MAX_INPUT_CHARS} caracteres`);
       console.log(
-        '[X402] Finish reason:',
-        completion.choices?.[0]?.finish_reason
+        '[X402] Tamaño aproximado de mensajes:',
+        Buffer.byteLength(JSON.stringify(x402Messages), 'utf8'),
+        'bytes'
       );
-      console.log('[X402] Uso:', completion.usage);
 
-      const content = completion.choices?.[0]?.message?.content;
-      const raw = typeof content === 'string' ? content : '{}';
+      try {
+        console.log('[X402] Enviando solicitud...');
 
-      console.log('[X402] Respuesta recibida:\n', raw);
+        const completion = await x402Client.chat.completions.create({
+          model: X402_MODEL,
+          messages: x402Messages,
+          temperature: 0.3,
+          response_format: { type: 'json_object' },
+        });
 
-      if (!raw || raw === '{}') {
-        console.warn('[X402] La respuesta llegó vacía o sin contenido.');
+        console.log('[X402] Solicitud exitosa');
+        console.log('[X402] Tiempo:', Date.now() - startedAt, 'ms');
+        console.log('[X402] ID:', completion.id);
+        console.log('[X402] Modelo devuelto:', completion.model);
+        console.log(
+          '[X402] Finish reason:',
+          completion.choices?.[0]?.finish_reason
+        );
+        console.log('[X402] Uso:', completion.usage);
+
+        const content = completion.choices?.[0]?.message?.content;
+        const raw = typeof content === 'string' ? content : '{}';
+
+        console.log('[X402] Respuesta recibida:\n', raw);
+
+        if (!raw || raw === '{}') {
+          console.warn('[X402] La respuesta llegó vacía o sin contenido.');
+        }
+
+        return parseDecisionJson(raw, 'x402-DeepSeek', ctx.level);
+      } catch (error: unknown) {
+        const err = error as {
+          name?: string;
+          message?: string;
+          stack?: string;
+          status?: number;
+          code?: string;
+          type?: string;
+          cause?: unknown;
+          headers?: unknown;
+          error?: unknown;
+        };
+
+        x402Msg = err?.message || String(error);
+
+        console.error('\n[X402] ❌ SOLICITUD FALLIDA');
+        console.error('[X402] Tiempo hasta el error:', Date.now() - startedAt, 'ms');
+        console.error('[X402] Nombre:', err?.name);
+        console.error('[X402] Mensaje:', err?.message);
+        console.error('[X402] Código:', err?.code);
+        console.error('[X402] Tipo:', err?.type);
+        console.error('[X402] Estado HTTP:', err?.status);
+        console.error('[X402] Causa:', err?.cause);
+        console.error('[X402] Error interno:', err?.error);
+        console.error('[X402] Stack:', err?.stack);
+
+        // Algunas versiones del SDK exponen estos campos;
+        // otras no. No imprimimos cabeceras de pago ni credenciales.
+        if (err?.headers) {
+          console.error('[X402] Cabeceras disponibles:', err.headers);
+        }
+
+        console.warn('[X402] Activando fallback a Ollama Cloud...');
       }
-
-      return parseDecisionJson(raw, 'x402-DeepSeek', ctx.level);
-    } catch (error: unknown) {
-      const err = error as {
-        name?: string;
-        message?: string;
-        stack?: string;
-        status?: number;
-        code?: string;
-        type?: string;
-        cause?: unknown;
-        headers?: unknown;
-        error?: unknown;
-      };
-
-      x402Msg = err?.message || String(error);
-
-      console.error('\n[X402] ❌ SOLICITUD FALLIDA');
-      console.error('[X402] Tiempo hasta el error:', Date.now() - startedAt, 'ms');
-      console.error('[X402] Nombre:', err?.name);
-      console.error('[X402] Mensaje:', err?.message);
-      console.error('[X402] Código:', err?.code);
-      console.error('[X402] Tipo:', err?.type);
-      console.error('[X402] Estado HTTP:', err?.status);
-      console.error('[X402] Causa:', err?.cause);
-      console.error('[X402] Error interno:', err?.error);
-      console.error('[X402] Stack:', err?.stack);
-
-      // Algunas versiones del SDK exponen estos campos;
-      // otras no. No imprimimos cabeceras de pago ni credenciales.
-      if (err?.headers) {
-        console.error('[X402] Cabeceras disponibles:', err.headers);
-      }
-
-      console.warn('[X402] Activando fallback a Ollama Cloud...');
     }
 
   } else {
