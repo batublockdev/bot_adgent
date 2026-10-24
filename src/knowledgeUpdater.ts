@@ -31,6 +31,10 @@ const TOKENS: Record<string, { address: Address; decimals: number }> = {
 // Pools confirmadas
 const POOLS: { pair: string; address: Address; token0: string; token1: string; fee: number }[] = [
   { pair: 'wBRL/USDT', address: '0x01c3cf91cdf7B34181C7eC8566c0236951FEA40F', token0: 'USDT', token1: 'wBRL', fee: 100 },
+  { pair: 'CELO/USDT', address: '0x6cde5f5a192fBf3fD84df983aa6DC30dbd9f8Fac', token0: 'CELO', token1: 'USDT', fee: 100 },
+  { pair: 'WETH/USDT', address: '0x6F42B9D2085a0dEb711C00A460a98B9863ae4897', token0: 'USDT', token1: 'WETH', fee: 3000 },
+  { pair: 'WBTC/USDT', address: '0x57332c214E647063bB4c5A73e5A8b7bbA79Be1E4', token0: 'USDT', token1: 'WBTC', fee: 3000 },
+  { pair: 'USDC/USDT', address: '0x1a810e0B6c2dd5629AFa2f0c898b9512C6F78846', token0: 'USDT', token1: 'USDC', fee: 100 },
 ];
 
 // ============ ABIs ============

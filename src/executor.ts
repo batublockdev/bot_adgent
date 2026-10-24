@@ -55,7 +55,7 @@ const CELO_CHAIN_ID = 42220;
 const ADGENT_PRIVATE_KEY = process.env.AGENT_PRIVATE_KEY as Hex;
 
 // RPC de Celo
-const CELO_RPC = 'https://celo-mainnet.core.chainstack.com/6637f2f34a100899d962161848ac1912';
+const CELO_RPC = process.env.CELO_RPC || 'https://forno.celo.org';
 
 // ============ CLIENTES ============
 
@@ -427,9 +427,8 @@ export function buildSwapData(
       { type: 'uint256', name: 'amountOutMin' },
       { type: 'bytes', name: 'path' },
       { type: 'bool', name: 'payerIsUser' },
-      { type: 'bytes', name: 'extra' },
     ],
-    [recipient, amountIn, amountOutMin, `0x${path}` as Hex, true, '0x' as Hex]
+    [recipient, amountIn, amountOutMin, `0x${path}` as Hex, true]
   );
 
   const params = encodeAbiParameters(

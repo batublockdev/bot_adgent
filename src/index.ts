@@ -13,6 +13,7 @@ import {
 } from './executor';
 import { getAllowanceContextForLLM, getAllAllowances, SPENDERS } from './allowanceManager';
 import { updateKnowledgeBase } from './knowledgeUpdater';
+import { getMarketData } from './marketData';
 
 // ============ CONFIGURATION ============
 
@@ -52,26 +53,6 @@ async function getWalletBalances(): Promise<Record<string, string>> {
   return balances;
 }
 
-async function getMarketData(): Promise<MarketData> {
-  // TODO: connect to Uniswap V3 Quoter for real prices
-  return {
-    prices: {
-      'wBRL/USDT': '0.18',
-      'USDT/USDC': '1.0001',
-      'WBTC/USDT': '65000',
-      'WETH/USDT': '3200',
-      'CELO/USDT': '0.85',
-    },
-    textileFXRates: {
-      'wBRL→USDT': '1 wBRL = 0.18 USDT',
-      'USDT→wBRL': '1 USDT = 5.56 wBRL',
-    },
-    poolTVLs: {
-      'USDT/WBTC': '$890K',
-      'wBRL/USDT': '$450K',
-    },
-  };
-}
 
 async function getPortfolio(level: 'alto' | 'medio' | 'bajo'): Promise<PortfolioState> {
   const walletBalances = await getWalletBalances();
@@ -217,7 +198,7 @@ async function main() {
   await initDB();
   console.log(`📍 Agent Wallet: ${agentAccount.address}`);
   console.log(`📦 MinimalAccount: ${MINIMAL_ACCOUNT}`);
-  console.log(`🧠 LLM: glm-5.3-flash:cloud (Ollama Cloud)`);
+  console.log(`🧠 LLM: Ollama Cloud (con fallback a Google Gemini)`);
   console.log(`🌐 Network: Celo mainnet (42220)`);
   console.log(`📊 Level: ${AGENT_LEVEL.toUpperCase()}`);
   console.log(`⏱️ Interval: ${LOOP_INTERVAL_MS / 1000}s\n`);

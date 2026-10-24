@@ -27,6 +27,11 @@ let initialized = false;
  */
 export async function initDB(): Promise<void> {
   if (initialized) return;
+  if (!process.env.DATABASE_URL) {
+    console.warn('[DB] ⚠️ DATABASE_URL no configurada. Operando sin base de datos (modo local/no-op).');
+    initialized = true;
+    return;
+  }
   initialized = true;
 
   const client = await pool.connect();
@@ -97,6 +102,9 @@ export async function initDB(): Promise<void> {
  * Wrapper para queries que asegura initDB() se ejecutó primero.
  */
 async function query(text: string, params?: any[]) {
+  if (!process.env.DATABASE_URL) {
+    return { rows: [] };
+  }
   if (!initialized) await initDB();
   return pool.query(text, params);
 }
@@ -317,7 +325,9 @@ export async function getMemorySummary(): Promise<string> {
 // ============ CLEANUP ============
 
 export async function closeDB(): Promise<void> {
-  await pool.end();
+  if (process.env.DATABASE_URL) {
+    await pool.end();
+  }
 }
 
 export default pool;

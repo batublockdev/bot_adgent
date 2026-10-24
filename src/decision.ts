@@ -5,13 +5,14 @@ import { MINIMAL_ACCOUNT } from './executor';
 
 dotenv.config();
 
-// Ollama Cloud direct
+// Ollama Cloud direct (proveedor primario)
 const ollamaClient = new OpenAI({
   baseURL: 'https://ollama.com/v1',
   apiKey: process.env.OLLAMA_API_KEY || 'ollama',
 });
 
-const MODEL = 'glm-5.3-flash:cloud';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'glm-5.3-flash:cloud';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 export interface TradingDecision {
   action: 'swap' | 'supply' | 'borrow' | 'repay' | 'withdraw' | 'swap_and_supply' | 'hold' | 'request_approval' | 'request_setup';
@@ -41,26 +42,7 @@ export interface AgentContext {
   userPrompt: string;
 }
 
-/**
- * Sends context to the LLM and returns a structured trading decision
- */
-export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> {
-  const completion = await ollamaClient.chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: 'system', content: ctx.systemPrompt },
-      { role: 'system', content: `CURRENT STATE:\n${ctx.currentState}` },
-      { role: 'system', content: `MARKET DATA:\n${ctx.marketData}` },
-      { role: 'system', content: `RELEVANT HISTORY:\n${ctx.history}` },
-      { role: 'system', content: `RULES:\n${ctx.rules}` },
-      { role: 'user', content: ctx.userPrompt },
-    ],
-    temperature: 0.3,
-    response_format: { type: 'json_object' },
-  });
-
-  const raw = completion.choices[0]?.message?.content || '{}';
-
+function parseDecisionJson(raw: string, providerName: string): TradingDecision {
   try {
     let cleanJson = raw.trim();
     if (cleanJson.startsWith('```')) {
@@ -69,13 +51,90 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
     const decision = JSON.parse(cleanJson) as TradingDecision;
     return decision;
   } catch {
-    console.error('LLM did not return valid JSON:', raw);
+    console.error(`[${providerName}] LLM did not return valid JSON:`, raw);
     return {
       action: 'hold',
-      reason: 'Error parsing LLM response',
+      reason: `Error parsing JSON response from ${providerName}`,
       confidence: 0,
       level: 'bajo',
     };
+  }
+}
+
+/**
+ * Sends context to the LLM and returns a structured trading decision.
+ * First tries Ollama Cloud. If it hits limits or errors, falls back to Google Gemini free tier.
+ */
+export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> {
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: 'system', content: ctx.systemPrompt },
+    { role: 'system', content: `CURRENT STATE:\n${ctx.currentState}` },
+    { role: 'system', content: `MARKET DATA:\n${ctx.marketData}` },
+    { role: 'system', content: `RELEVANT HISTORY:\n${ctx.history}` },
+    { role: 'system', content: `RULES:\n${ctx.rules}` },
+    { role: 'user', content: ctx.userPrompt },
+  ];
+
+  // ==========================================
+  // 1. INTENTO PRIMARIO: OLLAMA CLOUD
+  // ==========================================
+  try {
+    console.log(`🤖 [LLM] Consultando proveedor principal: Ollama Cloud (${OLLAMA_MODEL})...`);
+    const completion = await ollamaClient.chat.completions.create({
+      model: OLLAMA_MODEL,
+      messages,
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+    });
+
+    const raw = completion.choices[0]?.message?.content || '{}';
+    return parseDecisionJson(raw, 'Ollama');
+  } catch (ollamaError: any) {
+    const ollamaMsg = ollamaError?.message || String(ollamaError);
+    console.warn(`\n⚠️ [LLM] Ollama Cloud falló: ${ollamaMsg}`);
+    console.log(`🔄 [LLM] Activando fallback automático a Google Gemini...`);
+
+    // ==========================================
+    // 2. FALLBACK GRATUITO: GOOGLE GEMINI
+    // ==========================================
+    const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!geminiApiKey) {
+      console.error('❌ [LLM] GEMINI_API_KEY o GOOGLE_API_KEY no encontrada en .env');
+      return {
+        action: 'hold',
+        reason: `Ollama falló (${ollamaMsg}) y no hay GEMINI_API_KEY configurada para fallback.`,
+        confidence: 0,
+        level: 'bajo',
+      };
+    }
+
+    try {
+      const geminiClient = new OpenAI({
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+        apiKey: geminiApiKey,
+      });
+
+      console.log(`🤖 [LLM] Consultando Google Gemini (${GEMINI_MODEL})...`);
+      const completion = await geminiClient.chat.completions.create({
+        model: GEMINI_MODEL,
+        messages,
+        temperature: 0.3,
+        response_format: { type: 'json_object' },
+      });
+
+      console.log(`✅ [LLM] Google Gemini (${GEMINI_MODEL}) respondió exitosamente.`);
+      const raw = completion.choices[0]?.message?.content || '{}';
+      return parseDecisionJson(raw, 'Gemini');
+    } catch (geminiError: any) {
+      const geminiMsg = geminiError?.message || String(geminiError);
+      console.error(`❌ [LLM] Fallback a Google Gemini también falló: ${geminiMsg}`);
+      return {
+        action: 'hold',
+        reason: `Falla en ambos LLMs (Ollama: ${ollamaMsg} | Gemini: ${geminiMsg})`,
+        confidence: 0,
+        level: 'bajo',
+      };
+    }
   }
 }
 
