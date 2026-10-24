@@ -40,23 +40,123 @@ export interface AgentContext {
   history: string;
   rules: string;
   userPrompt: string;
+  level?: 'alto' | 'medio' | 'bajo';
 }
 
-function parseDecisionJson(raw: string, providerName: string): TradingDecision {
+function extractJsonString(raw: string): string {
+  const trimmed = raw.trim();
+  // 1. Try markdown code block
+  const codeBlockMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (codeBlockMatch && codeBlockMatch[1]) {
+    return codeBlockMatch[1].trim();
+  }
+  // 2. Try first { to last }
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.substring(firstBrace, lastBrace + 1);
+  }
+  // 3. Try first [ to last ] (in case it returned an array)
+  const firstBracket = trimmed.indexOf('[');
+  const lastBracket = trimmed.lastIndexOf(']');
+  if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+    return trimmed.substring(firstBracket, lastBracket + 1);
+  }
+  return trimmed;
+}
+
+function parseDecisionJson(raw: string, providerName: string, defaultLevel: 'alto' | 'medio' | 'bajo' = 'alto'): TradingDecision {
   try {
-    let cleanJson = raw.trim();
-    if (cleanJson.startsWith('```')) {
-      cleanJson = cleanJson.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const cleanJson = extractJsonString(raw);
+    let parsed: any = JSON.parse(cleanJson);
+
+    // If an array was returned, take the first element
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      parsed = parsed[0];
     }
-    const decision = JSON.parse(cleanJson) as TradingDecision;
+
+    // Unwrap nested objects if model wrapped it (e.g. {"decision": {...}})
+    if (parsed && typeof parsed === 'object') {
+      const nested = parsed.decision || parsed.trading_decision || parsed.tradingDecision || parsed.result || parsed.response || parsed.data;
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        parsed = { ...parsed, ...nested };
+      }
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('Parsed result is not an object');
+    }
+
+    // Key case-insensitivity & aliases for action
+    const rawAction = parsed.action || parsed.Action || parsed.ACTION || parsed.recommendation || parsed.type || parsed.strategy;
+    let actionStr = typeof rawAction === 'string' ? rawAction.trim().toLowerCase() : '';
+
+    // Map common synonyms to valid actions
+    if (actionStr === 'deposit' || actionStr === 'invest') actionStr = 'supply';
+    if (actionStr === 'buy' || actionStr === 'sell') actionStr = 'swap';
+    if (actionStr === 'wait' || actionStr === 'do_nothing' || actionStr === 'none' || actionStr === 'idle') actionStr = 'hold';
+
+    const validActions: TradingDecision['action'][] = [
+      'swap', 'supply', 'borrow', 'repay', 'withdraw', 'swap_and_supply', 'hold', 'request_approval', 'request_setup'
+    ];
+
+    const action: TradingDecision['action'] = validActions.includes(actionStr as any)
+      ? (actionStr as TradingDecision['action'])
+      : 'hold';
+
+    const tokenIn = parsed.tokenIn || parsed.TokenIn || parsed.token_in || parsed.token || parsed.asset || parsed.Asset;
+    const tokenOut = parsed.tokenOut || parsed.TokenOut || parsed.token_out;
+    const amount = parsed.amount !== undefined && parsed.amount !== null ? String(parsed.amount) : undefined;
+    const fee = typeof parsed.fee === 'number' ? parsed.fee : (parsed.fee ? parseInt(parsed.fee, 10) : undefined);
+
+    let confidence = 50;
+    const confVal = parsed.confidence ?? parsed.Confidence;
+    if (typeof confVal === 'number' && !isNaN(confVal)) {
+      confidence = Math.min(100, Math.max(0, confVal));
+    } else if (typeof confVal === 'string' && !isNaN(parseFloat(confVal))) {
+      confidence = Math.min(100, Math.max(0, parseFloat(confVal)));
+    }
+
+    let reason = parsed.reason || parsed.Reason || parsed.explanation || parsed.rationale || parsed.message;
+    if (!reason || typeof reason !== 'string') {
+      reason = action === 'hold'
+        ? `Sin acción específica identificada de ${providerName}; manteniendo posición (hold).`
+        : `Decisión ${action} generada por ${providerName}`;
+    }
+
+    let level = parsed.level || parsed.Level || defaultLevel;
+    if (!['alto', 'medio', 'bajo'].includes(level)) {
+      level = defaultLevel;
+    }
+
+    const decision: TradingDecision = {
+      action,
+      tokenIn: tokenIn ? String(tokenIn) : undefined,
+      tokenOut: tokenOut ? String(tokenOut) : undefined,
+      asset: parsed.asset ? String(parsed.asset) : (tokenIn ? String(tokenIn) : undefined),
+      amount,
+      fee,
+      confidence,
+      reason: String(reason),
+      level,
+      needsApproval: Boolean(parsed.needsApproval),
+      approvalToken: parsed.approvalToken ? String(parsed.approvalToken) : undefined,
+      approvalSpender: parsed.approvalSpender ? String(parsed.approvalSpender) : undefined,
+      setupStep: typeof parsed.setupStep === 'number' ? parsed.setupStep : undefined,
+      setupTarget: parsed.setupTarget ? String(parsed.setupTarget) : undefined,
+      setupSelector: parsed.setupSelector ? String(parsed.setupSelector) : undefined,
+      setupAddress: parsed.setupAddress ? String(parsed.setupAddress) : undefined,
+    };
+
     return decision;
-  } catch {
+  } catch (error: any) {
     console.error(`[${providerName}] LLM did not return valid JSON:`, raw);
+    console.warn(`[${providerName}] Parse error: ${error?.message || error}`);
     return {
       action: 'hold',
       reason: `Error parsing JSON response from ${providerName}`,
       confidence: 0,
-      level: 'bajo',
+      level: defaultLevel,
     };
   }
 }
@@ -66,13 +166,19 @@ function parseDecisionJson(raw: string, providerName: string): TradingDecision {
  * First tries Ollama Cloud. If it hits limits or errors, falls back to Google Gemini free tier.
  */
 export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> {
+  const combinedSystemPrompt = [
+    ctx.systemPrompt,
+    `CURRENT STATE:\n${ctx.currentState}`,
+    `MARKET DATA:\n${ctx.marketData}`,
+    `RELEVANT HISTORY:\n${ctx.history}`,
+    `RULES:\n${ctx.rules}`,
+  ].join('\n\n========================================\n\n');
+
+  const combinedUserPrompt = `${ctx.userPrompt}\n\nCRITICAL: Respond ONLY with a valid JSON object matching the format: {"action":"swap"|"supply"|"borrow"|"repay"|"withdraw"|"swap_and_supply"|"hold"|"request_approval"|"request_setup","tokenIn":"...","tokenOut":"...","amount":"...","reason":"...","confidence":0-100,"level":"alto"|"medio"|"bajo"}`;
+
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: 'system', content: ctx.systemPrompt },
-    { role: 'system', content: `CURRENT STATE:\n${ctx.currentState}` },
-    { role: 'system', content: `MARKET DATA:\n${ctx.marketData}` },
-    { role: 'system', content: `RELEVANT HISTORY:\n${ctx.history}` },
-    { role: 'system', content: `RULES:\n${ctx.rules}` },
-    { role: 'user', content: ctx.userPrompt },
+    { role: 'system', content: combinedSystemPrompt },
+    { role: 'user', content: combinedUserPrompt },
   ];
 
   // ==========================================
@@ -88,7 +194,8 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
     });
 
     const raw = completion.choices[0]?.message?.content || '{}';
-    return parseDecisionJson(raw, 'Ollama');
+    console.log(`📥 [Ollama] Respuesta:\n${raw}`);
+    return parseDecisionJson(raw, 'Ollama', ctx.level);
   } catch (ollamaError: any) {
     const ollamaMsg = ollamaError?.message || String(ollamaError);
     console.warn(`\n⚠️ [LLM] Ollama Cloud falló: ${ollamaMsg}`);
@@ -104,7 +211,7 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
         action: 'hold',
         reason: `Ollama falló (${ollamaMsg}) y no hay GEMINI_API_KEY configurada para fallback.`,
         confidence: 0,
-        level: 'bajo',
+        level: ctx.level || 'bajo',
       };
     }
 
@@ -124,7 +231,8 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
 
       console.log(`✅ [LLM] Google Gemini (${GEMINI_MODEL}) respondió exitosamente.`);
       const raw = completion.choices[0]?.message?.content || '{}';
-      return parseDecisionJson(raw, 'Gemini');
+      console.log(`📥 [Gemini] Respuesta:\n${raw}`);
+      return parseDecisionJson(raw, 'Gemini', ctx.level);
     } catch (geminiError: any) {
       const geminiMsg = geminiError?.message || String(geminiError);
       console.error(`❌ [LLM] Fallback a Google Gemini también falló: ${geminiMsg}`);
@@ -132,7 +240,7 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
         action: 'hold',
         reason: `Falla en ambos LLMs (Ollama: ${ollamaMsg} | Gemini: ${geminiMsg})`,
         confidence: 0,
-        level: 'bajo',
+        level: ctx.level || 'bajo',
       };
     }
   }

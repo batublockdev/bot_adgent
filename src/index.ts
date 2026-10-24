@@ -121,7 +121,8 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
     console.log('🤖 Sending to LLM...');
     const decision = await makeDecision(ctx);
 
-    console.log(`\n📌 Decision: ${decision.action.toUpperCase()}`);
+    const actionDisplay = (decision?.action || 'hold').toUpperCase();
+    console.log(`\n📌 Decision: ${actionDisplay}`);
     if (decision.tokenIn && decision.tokenOut) {
       console.log(`   ${decision.tokenIn} → ${decision.tokenOut}`);
     } else if (decision.tokenIn) {
@@ -129,8 +130,8 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
     }
     if (decision.fee) console.log(`   Fee: ${decision.fee}`);
     console.log(`   Amount: ${decision.amount || 'N/A'}`);
-    console.log(`   Confidence: ${decision.confidence}%`);
-    console.log(`   Reason: ${decision.reason}`);
+    console.log(`   Confidence: ${decision.confidence ?? 0}%`);
+    console.log(`   Reason: ${decision.reason || 'N/A'}`);
 
     // 4. SAVE DECISION
     await saveDecision(decision);
@@ -151,7 +152,7 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
     const shouldExecute =
       decision.action === 'request_setup' ||
       decision.action === 'request_approval' ||
-      (decision.action !== 'hold' && decision.confidence >= MAX_CONFIDENCE_THRESHOLD);
+      (decision.action !== 'hold' && (decision.confidence ?? 0) >= MAX_CONFIDENCE_THRESHOLD);
 
     if (shouldExecute) {
       console.log(`\n⚡ Executing...`);

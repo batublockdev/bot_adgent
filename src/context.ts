@@ -240,6 +240,7 @@ ${Object.entries(marketData.poolTVLs).map(([pool, tvl]) => `  ${pool}: ${tvl}`).
     history: memorySummary,
     rules: rulesStr,
     userPrompt: getDefaultUserPrompt(level),
+    level,
   };
 }
 
