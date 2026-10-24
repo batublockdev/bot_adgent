@@ -207,11 +207,14 @@ function parseDecisionJson(raw: string, providerName: string, defaultLevel: 'alt
 export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> {
   const combinedUserPrompt = `${ctx.userPrompt}\n\nCRITICAL: Respond ONLY with a valid JSON object matching the format: {"action":"swap"|"supply"|"borrow"|"repay"|"withdraw"|"swap_and_supply"|"hold"|"request_approval"|"request_setup","tokenIn":"...","tokenOut":"...","amount":"...","reason":"...","confidence":0-100,"level":"alto"|"medio"|"bajo"}`;
 
-  const createMessages = (history: string): OpenAI.Chat.ChatCompletionMessageParam[] => [
+  const createMessages = (
+    history: string,
+    systemPrompt = ctx.systemPrompt,
+  ): OpenAI.Chat.ChatCompletionMessageParam[] => [
     {
       role: 'system',
       content: [
-        ctx.systemPrompt,
+        systemPrompt,
         `CURRENT STATE:\n${ctx.currentState}`,
         `MARKET DATA:\n${ctx.marketData}`,
         `RELEVANT HISTORY:\n${history}`,
@@ -222,7 +225,18 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
   ];
 
   const messages = createMessages(ctx.history);
-  let x402Messages = messages;
+  const nanoLevelRules: Record<NonNullable<AgentContext['level']>, string> = {
+    alto: 'Borrow only when health factor is above 1.5; keep borrowing within 70% of collateral. If health factor is below 1.3, prioritize repay.',
+    medio: 'Do not borrow. Limit allocation to 30% per asset; operate only within the supplied rules.',
+    bajo: 'Only USDT and USDC; no borrowing or crypto exposure. Supply on Aave; if wBRL is idle, swap it to USDT and supply.',
+  };
+  const nanoSystemPrompt = [
+    `You are a Celo DeFi investment agent. Make a cautious decision using only the live state, market data, and rules provided. Never invent balances, prices, approvals, or capabilities. If data is insufficient or an action is unsafe, return hold.`,
+    `Only use supported actions: swap, supply, borrow, repay, withdraw, swap_and_supply, hold, request_approval, request_setup. Use human token units. USDT may be supplied on Aave. Never supply CELO; reserve it for gas.`,
+    nanoLevelRules[ctx.level || 'alto'],
+    'Follow the supplied RULES and safety limits. Return only the required JSON object with action, tokenIn/tokenOut as applicable, amount, reason, confidence (0-100), and level.',
+  ].join('\n');
+  let x402Messages = createMessages(ctx.history, nanoSystemPrompt);
   let x402InputChars = JSON.stringify(x402Messages).length;
 
   if (x402InputChars > X402_NANO_MAX_INPUT_CHARS) {
@@ -239,7 +253,7 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
 
     while (low < high) {
       const retained = Math.ceil((low + high) / 2);
-      const candidate = createMessages(retainHistory(retained));
+      const candidate = createMessages(retainHistory(retained), nanoSystemPrompt);
 
       if (JSON.stringify(candidate).length <= X402_NANO_MAX_INPUT_CHARS) {
         low = retained;
@@ -248,7 +262,7 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
       }
     }
 
-    x402Messages = createMessages(retainHistory(low));
+    x402Messages = createMessages(retainHistory(low), nanoSystemPrompt);
     x402InputChars = JSON.stringify(x402Messages).length;
   }
 
