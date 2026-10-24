@@ -1,7 +1,7 @@
 import { webcrypto } from 'node:crypto';
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
-import { wrapFetchWithPaymentFromConfig } from '@x402/fetch';
+import { decodePaymentResponseHeader, wrapFetchWithPaymentFromConfig } from '@x402/fetch';
 import { ExactEvmScheme, toClientEvmSigner } from '@x402/evm';
 
 import { agentAccount } from './client';
@@ -294,15 +294,32 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
       try {
         console.log('[X402] Enviando solicitud...');
 
-        const completion = await x402Client.chat.completions.create({
+        const { data: completion, response } = await x402Client.chat.completions.create({
           model: X402_MODEL,
           messages: x402Messages,
           temperature: 0.3,
           response_format: { type: 'json_object' },
-        });
+        }).withResponse();
 
         console.log('[X402] Solicitud exitosa');
         console.log('[X402] Tiempo:', Date.now() - startedAt, 'ms');
+        const paymentResponseHeader = response.headers.get('PAYMENT-RESPONSE')
+          || response.headers.get('X-PAYMENT-RESPONSE');
+        if (paymentResponseHeader) {
+          try {
+            const paymentResponse = decodePaymentResponseHeader(paymentResponseHeader);
+            if (paymentResponse.success && paymentResponse.transaction) {
+              console.log('[X402] Hash del pago:', paymentResponse.transaction);
+            } else {
+              console.warn('[X402] El proveedor no confirmó un pago exitoso en el recibo.');
+            }
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn(`[X402] No se pudo leer el recibo de pago: ${message}`);
+          }
+        } else {
+          console.warn('[X402] La respuesta no incluyó un recibo de pago.');
+        }
         console.log('[X402] ID:', completion.id);
         console.log('[X402] Modelo devuelto:', completion.model);
         console.log(

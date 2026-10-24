@@ -1,9 +1,9 @@
 import { makeDecision } from './decision';
 import { buildContext, TOKENS } from './context';
 import type { PortfolioState, MarketData } from './context';
-import { saveTrade, saveDecision, savePerformance, getLatestPerformance, initDB, closeDB } from './memory';
+import { saveTrade, saveDecision, updateDecisionResult, savePerformance, getLatestPerformance, initDB, closeDB } from './memory';
 import { walletClient, agentAccount } from './client';
-import { createPublicClient, http, formatUnits } from 'viem';
+import { createPublicClient, http, formatUnits, parseUnits } from 'viem';
 import { celo } from 'viem/chains';
 import {
   executeDecision as executeViaMinimalAccount,
@@ -133,10 +133,7 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
     console.log(`   Confidence: ${decision.confidence ?? 0}%`);
     console.log(`   Reason: ${decision.reason || 'N/A'}`);
 
-    // 4. SAVE DECISION
-    await saveDecision(decision);
-
-    // 5. EXECUTE
+    // 4. VALIDATE AND EXECUTE
     // Check minimum threshold — don't operate with amounts that only spend gas
     const decisionAmount = parseFloat(decision.amount || '0');
     const tokenSym = decision.tokenIn || decision.asset || '';
@@ -149,6 +146,29 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
       decision.reason = `Amount too small (${decisionAmount} ${tokenSym}) — gas cost > potential return. Holding.`;
     }
 
+    const actionsRequiringBalance = ['supply', 'swap', 'swap_and_supply', 'repay'];
+    if (decision.action !== 'hold' && actionsRequiringBalance.includes(decision.action) && tokenSym && decision.amount) {
+      const availableBalance = portfolio.walletBalances[tokenSym];
+      try {
+        const decimals = TOKEN_DECIMALS[tokenSym] ?? 18;
+        const required = parseUnits(decision.amount, decimals);
+        const available = availableBalance === undefined ? 0n : parseUnits(availableBalance, decimals);
+
+        if (required > available) {
+          console.log(`\n⏸️ Auto HOLD — insufficient ${tokenSym} balance: requested ${decision.amount}, available ${availableBalance ?? '0'}`);
+          decision.action = 'hold';
+          decision.reason = `Insufficient ${tokenSym} balance: requested ${decision.amount}, available ${availableBalance ?? '0'}. Holding.`;
+        }
+      } catch {
+        console.warn(`[DECISION] Invalid ${tokenSym} amount or balance precision; converting action to HOLD.`);
+        decision.action = 'hold';
+        decision.reason = `Invalid ${tokenSym} amount or balance precision (${decision.amount}). Holding.`;
+      }
+    }
+
+    // Save the final action after automatic holds have been applied.
+    const decisionId = await saveDecision(decision);
+
     const shouldExecute =
       decision.action === 'request_setup' ||
       decision.action === 'request_approval' ||
@@ -159,8 +179,11 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
       const result = await executeDecision(decision, level);
       console.log(result);
 
+      const executionSucceeded = result.startsWith('✅ Executed:');
+      await updateDecisionResult(decisionId, executionSucceeded, result);
+
       // Save trade if executed
-      if (!result.includes('NEEDS_APPROVAL') && !result.includes('NEEDS_SETUP') && decision.action !== 'hold') {
+      if (executionSucceeded && !result.includes('NEEDS_APPROVAL') && !result.includes('NEEDS_SETUP') && decision.action !== 'hold') {
         await saveTrade({
           action: decision.action,
           asset: decision.tokenIn || decision.tokenOut || decision.asset,
@@ -172,8 +195,10 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
       }
     } else if (decision.action !== 'hold') {
       console.log(`\n⏸️ Not executing — confidence ${decision.confidence}% < ${MAX_CONFIDENCE_THRESHOLD}%`);
+      await updateDecisionResult(decisionId, false, `Not executed: confidence ${decision.confidence}% below ${MAX_CONFIDENCE_THRESHOLD}%.`);
     } else {
       console.log(`\n⏸️ Hold`);
+      await updateDecisionResult(decisionId, false, decision.reason);
     }
 
     // 6. PERFORMANCE

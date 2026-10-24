@@ -152,17 +152,18 @@ export async function getAllTrades(): Promise<any[]> {
 
 // ============ DECISIONES ============
 
-export function saveDecision(decision: {
+export async function saveDecision(decision: {
   action: string;
   asset?: string;
   amount?: string;
   reason: string;
   confidence: number;
   level: string;
-}): Promise<void> {
-  return query(
+}): Promise<number | null> {
+  const result = await query(
     `INSERT INTO decisions (timestamp, action, asset, amount, reason, confidence, level)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id`,
     [
       Date.now(),
       decision.action,
@@ -172,10 +173,12 @@ export function saveDecision(decision: {
       decision.confidence,
       decision.level,
     ]
-  ).then(() => {});
+  );
+  return result.rows[0] ? Number(result.rows[0].id) : null;
 }
 
-export async function updateDecisionResult(id: number, executed: boolean, result: string): Promise<void> {
+export async function updateDecisionResult(id: number | null, executed: boolean, result: string): Promise<void> {
+  if (id === null) return;
   await query('UPDATE decisions SET executed = $1, result = $2 WHERE id = $3', [
     executed ? 1 : 0,
     result,
