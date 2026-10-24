@@ -1,17 +1,49 @@
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
+import { wrapFetchWithPaymentFromConfig } from '@x402/fetch';
+import { ExactEvmScheme, toClientEvmSigner } from '@x402/evm';
 
+import { agentAccount } from './client';
 import { MINIMAL_ACCOUNT } from './executor';
 
 dotenv.config();
 
-// Ollama Cloud direct (proveedor primario)
+// ============ CLIENTE X402 / BUY (PROVEEDOR PRIMARIO) ============
+// Paga por inferencia con stablecoins (USDC/USDT) en Celo mainnet al recibir HTTP 402
+const X402_LLM_URL = process.env.X402_LLM_URL;
+const X402_MODEL = process.env.X402_MODEL || 'deepseek/deepseek-chat';
+
+let x402Client: OpenAI | null = null;
+try {
+  const signer = toClientEvmSigner(agentAccount);
+  const scheme = new ExactEvmScheme(signer);
+  const x402Fetch = wrapFetchWithPaymentFromConfig(fetch, {
+    schemes: [
+      {
+        network: 'eip155:42220', // Celo Mainnet
+        client: scheme,
+      },
+    ],
+  });
+
+  x402Client = new OpenAI({
+    baseURL: X402_LLM_URL || 'https://gateway.usebuy.ai/v1',
+    apiKey: process.env.X402_API_KEY || 'x402-wallet',
+    fetch: x402Fetch,
+  });
+} catch (err: any) {
+  console.warn(`[LLM] Advertencia: No se pudo instanciar cliente x402: ${err?.message || err}`);
+}
+
+// ============ OLLAMA CLOUD (FALLBACK 1) ============
 const ollamaClient = new OpenAI({
   baseURL: 'https://ollama.com/v1',
   apiKey: process.env.OLLAMA_API_KEY || 'ollama',
 });
 
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'glm-5.3-flash:cloud';
+
+// ============ GOOGLE GEMINI (FALLBACK 2) ============
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 export interface TradingDecision {
@@ -182,67 +214,101 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
   ];
 
   // ==========================================
-  // 1. INTENTO PRIMARIO: OLLAMA CLOUD
+  // 1. INTENTO PRIMARIO: X402 / BUY (PAGO CON STABLECOINS EN CELO MAINNET)
+  // Modelo: DeepSeek-V3
   // ==========================================
-  try {
-    console.log(`🤖 [LLM] Consultando proveedor principal: Ollama Cloud (${OLLAMA_MODEL})...`);
-    const completion = await ollamaClient.chat.completions.create({
-      model: OLLAMA_MODEL,
-      messages,
-      temperature: 0.3,
-      response_format: { type: 'json_object' },
-    });
-
-    const raw = completion.choices[0]?.message?.content || '{}';
-    console.log(`📥 [Ollama] Respuesta:\n${raw}`);
-    return parseDecisionJson(raw, 'Ollama', ctx.level);
-  } catch (ollamaError: any) {
-    const ollamaMsg = ollamaError?.message || String(ollamaError);
-    console.warn(`\n⚠️ [LLM] Ollama Cloud falló: ${ollamaMsg}`);
-    console.log(`🔄 [LLM] Activando fallback automático a Google Gemini...`);
-
-    // ==========================================
-    // 2. FALLBACK GRATUITO: GOOGLE GEMINI
-    // ==========================================
-    const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-    if (!geminiApiKey) {
-      console.error('❌ [LLM] GEMINI_API_KEY o GOOGLE_API_KEY no encontrada en .env');
-      return {
-        action: 'hold',
-        reason: `Ollama falló (${ollamaMsg}) y no hay GEMINI_API_KEY configurada para fallback.`,
-        confidence: 0,
-        level: ctx.level || 'bajo',
-      };
-    }
-
+  let x402Msg = '';
+  if (x402Client && X402_LLM_URL) {
     try {
-      const geminiClient = new OpenAI({
-        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-        apiKey: geminiApiKey,
-      });
-
-      console.log(`🤖 [LLM] Consultando Google Gemini (${GEMINI_MODEL})...`);
-      const completion = await geminiClient.chat.completions.create({
-        model: GEMINI_MODEL,
+      console.log(`🤖 [LLM] Consultando proveedor principal x402 / Buy: DeepSeek-V3 (${X402_MODEL})...`);
+      const completion = await x402Client.chat.completions.create({
+        model: X402_MODEL,
         messages,
         temperature: 0.3,
         response_format: { type: 'json_object' },
       });
 
-      console.log(`✅ [LLM] Google Gemini (${GEMINI_MODEL}) respondió exitosamente.`);
       const raw = completion.choices[0]?.message?.content || '{}';
-      console.log(`📥 [Gemini] Respuesta:\n${raw}`);
-      return parseDecisionJson(raw, 'Gemini', ctx.level);
-    } catch (geminiError: any) {
-      const geminiMsg = geminiError?.message || String(geminiError);
-      console.error(`❌ [LLM] Fallback a Google Gemini también falló: ${geminiMsg}`);
-      return {
-        action: 'hold',
-        reason: `Falla en ambos LLMs (Ollama: ${ollamaMsg} | Gemini: ${geminiMsg})`,
-        confidence: 0,
-        level: ctx.level || 'bajo',
-      };
+      console.log(`📥 [x402 DeepSeek] Respuesta:\n${raw}`);
+      return parseDecisionJson(raw, 'x402-DeepSeek', ctx.level);
+    } catch (x402Error: any) {
+      x402Msg = x402Error?.message || String(x402Error);
+      console.warn(`\n⚠️ [LLM] x402 / Buy falló: ${x402Msg}`);
+      console.log(`🔄 [LLM] Activando fallback 1 a Ollama Cloud...`);
     }
+  } else {
+    x402Msg = 'X402_LLM_URL no configurado';
+  }
+
+  // ==========================================
+  // 2. FALLBACK 1: OLLAMA CLOUD
+  // ==========================================
+  let ollamaMsg = '';
+  const ollamaKey = process.env.OLLAMA_API_KEY;
+  if (ollamaKey && ollamaKey !== 'tu_ollama_api_key') {
+    try {
+      console.log(`🤖 [LLM] Consultando fallback 1: Ollama Cloud (${OLLAMA_MODEL})...`);
+      const completion = await ollamaClient.chat.completions.create({
+        model: OLLAMA_MODEL,
+        messages,
+        temperature: 0.3,
+        response_format: { type: 'json_object' },
+      });
+
+      const raw = completion.choices[0]?.message?.content || '{}';
+      console.log(`📥 [Ollama] Respuesta:\n${raw}`);
+      return parseDecisionJson(raw, 'Ollama', ctx.level);
+    } catch (ollamaError: any) {
+      ollamaMsg = ollamaError?.message || String(ollamaError);
+      console.warn(`\n⚠️ [LLM] Ollama Cloud falló: ${ollamaMsg}`);
+      console.log(`🔄 [LLM] Activando fallback 2 a Google Gemini...`);
+    }
+  } else {
+    ollamaMsg = 'Ollama API key ausente o inválida';
+    console.log(`ℹ️ [LLM] Ollama Cloud omitido (${ollamaMsg}). Pasando a Google Gemini...`);
+  }
+
+  // ==========================================
+  // 3. FALLBACK 2: GOOGLE GEMINI
+  // ==========================================
+  const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!geminiApiKey || geminiApiKey === 'tu_gemini_api_key') {
+    console.error('❌ [LLM] GEMINI_API_KEY o GOOGLE_API_KEY no encontrada en .env');
+    return {
+      action: 'hold',
+      reason: `Falla en proveedores (x402: ${x402Msg} | Ollama: ${ollamaMsg}) y no hay GEMINI_API_KEY configurada.`,
+      confidence: 0,
+      level: ctx.level || 'bajo',
+    };
+  }
+
+  try {
+    const geminiClient = new OpenAI({
+      baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      apiKey: geminiApiKey,
+    });
+
+    console.log(`🤖 [LLM] Consultando fallback 2: Google Gemini (${GEMINI_MODEL})...`);
+    const completion = await geminiClient.chat.completions.create({
+      model: GEMINI_MODEL,
+      messages,
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+    });
+
+    console.log(`✅ [LLM] Google Gemini (${GEMINI_MODEL}) respondió exitosamente.`);
+    const raw = completion.choices[0]?.message?.content || '{}';
+    console.log(`📥 [Gemini] Respuesta:\n${raw}`);
+    return parseDecisionJson(raw, 'Gemini', ctx.level);
+  } catch (geminiError: any) {
+    const geminiMsg = geminiError?.message || String(geminiError);
+    console.error(`❌ [LLM] Fallback a Google Gemini también falló: ${geminiMsg}`);
+    return {
+      action: 'hold',
+      reason: `Falla en todos los LLMs (x402: ${x402Msg} | Ollama: ${ollamaMsg} | Gemini: ${geminiMsg})`,
+      confidence: 0,
+      level: ctx.level || 'bajo',
+    };
   }
 }
 

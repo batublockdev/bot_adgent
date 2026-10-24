@@ -8,12 +8,21 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts"
   },
-  "keywords": ["celo", "defi", "uniswap", "aave", "autonomous-agent"],
+  "keywords": [
+    "celo",
+    "defi",
+    "uniswap",
+    "aave",
+    "autonomous-agent"
+  ],
   "author": "batublockdev",
   "license": "ISC",
   "dependencies": {
     "@celo/attribution-tags": "^0.5.0",
     "@celo/client": "^0.0.419",
+    "@x402/core": "^2.28.0",
+    "@x402/evm": "^2.28.0",
+    "@x402/fetch": "^2.28.0",
     "dotenv": "^18.0.8",
     "openai": "^7.38.0",
     "pg": "^8.16.0",

@@ -7,7 +7,7 @@ import dotenv from 'dotenv';
 dotenv.config(); // Cargar variables de entorno
 
 const AGENT_PRIVATE_KEY: Hex = (process.env.AGENT_PRIVATE_KEY as Hex) || '0x0000000000000000000000000000000000000000000000000000000000000000'; // Usa una clave vacía si no está definida para evitar errores, pero DEBE ser una clave real
-const ATTRIBUTION_TAG = 'celo_6d966470558a'; // Tu attribution tag
+export const ATTRIBUTION_TAG = process.env.ATTRIBUTION_TAG || 'celo_6d966470558a'; // Tu attribution tag oficial
 
 // Account para el agent
 export const agentAccount = privateKeyToAccount(AGENT_PRIVATE_KEY);

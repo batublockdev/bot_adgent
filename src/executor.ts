@@ -27,10 +27,11 @@ import {
   toHex,
 } from 'viem';
 import { celo } from 'viem/chains';
-import { withAttribution } from '@celo/attribution-tags'
+import { withAttribution } from '@celo/attribution-tags';
 import { privateKeyToAccount, sign } from 'viem/accounts';
 import dotenv from 'dotenv';
 import { checkSwapPermissions, SPENDERS } from './allowanceManager';
+import { ATTRIBUTION_TAG } from './client';
 
 dotenv.config();
 
@@ -70,7 +71,7 @@ const walletClient = createWalletClient({
   account: adgentAccount,
   chain: celo,
   transport: http(CELO_RPC),
-}).extend(withAttribution('celo_6d966470558a'));
+}).extend(withAttribution(ATTRIBUTION_TAG));
 
 // ============ ABIs ============
 
