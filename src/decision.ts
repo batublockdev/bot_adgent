@@ -8,10 +8,10 @@ import { MINIMAL_ACCOUNT } from './executor';
 
 dotenv.config();
 
-// ============ CLIENTE X402 / BUY (PROVEEDOR PRIMARIO) ============
-// Paga por inferencia con stablecoins (USDC/USDT) en Celo mainnet al recibir HTTP 402
-const X402_LLM_URL = process.env.X402_LLM_URL;
-const X402_MODEL = process.env.X402_MODEL || 'deepseek/deepseek-chat';
+// ============ CLIENTE X402 / AGENT402 (PROVEEDOR PRIMARIO) ============
+// Paga por inferencia con USDC en Celo mainnet mediante x402 v2 ($0.003 / req)
+const X402_LLM_URL = process.env.X402_LLM_URL || 'https://agent402.tools/v1/nano';
+const X402_MODEL = process.env.X402_MODEL || 'deepseek-chat';
 
 let x402Client: OpenAI | null = null;
 try {
@@ -27,7 +27,7 @@ try {
   });
 
   x402Client = new OpenAI({
-    baseURL: X402_LLM_URL || 'https://gateway.usebuy.ai/v1',
+    baseURL: X402_LLM_URL,
     apiKey: process.env.X402_API_KEY || 'x402-wallet',
     fetch: x402Fetch,
   });
@@ -44,7 +44,7 @@ const ollamaClient = new OpenAI({
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'glm-5.3-flash:cloud';
 
 // ============ GOOGLE GEMINI (FALLBACK 2) ============
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
 export interface TradingDecision {
   action: 'swap' | 'supply' | 'borrow' | 'repay' | 'withdraw' | 'swap_and_supply' | 'hold' | 'request_approval' | 'request_setup';
@@ -214,13 +214,13 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
   ];
 
   // ==========================================
-  // 1. INTENTO PRIMARIO: X402 / BUY (PAGO CON STABLECOINS EN CELO MAINNET)
-  // Modelo: DeepSeek-V3
+  // 1. INTENTO PRIMARIO: X402 / AGENT402 (PAGO EN USDC EN CELO MAINNET)
+  // Modelo: DeepSeek-V3 (deepseek-chat)
   // ==========================================
   let x402Msg = '';
   if (x402Client && X402_LLM_URL) {
     try {
-      console.log(`🤖 [LLM] Consultando proveedor principal x402 / Buy: DeepSeek-V3 (${X402_MODEL})...`);
+      console.log(`🤖 [LLM] Consultando proveedor principal x402 (Agent402): ${X402_MODEL} (${X402_LLM_URL})...`);
       const completion = await x402Client.chat.completions.create({
         model: X402_MODEL,
         messages,
@@ -233,11 +233,11 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
       return parseDecisionJson(raw, 'x402-DeepSeek', ctx.level);
     } catch (x402Error: any) {
       x402Msg = x402Error?.message || String(x402Error);
-      console.warn(`\n⚠️ [LLM] x402 / Buy falló: ${x402Msg}`);
+      console.warn(`\n⚠️ [LLM] x402 / Agent402 falló: ${x402Msg}`);
       console.log(`🔄 [LLM] Activando fallback 1 a Ollama Cloud...`);
     }
   } else {
-    x402Msg = 'X402_LLM_URL no configurado';
+    x402Msg = 'X402_LLM_URL no configurado o cliente no disponible';
   }
 
   // ==========================================
