@@ -70,8 +70,14 @@ export async function initDB(): Promise<void> {
         confidence INTEGER,
         level TEXT NOT NULL,
         executed INTEGER DEFAULT 0,
-        result TEXT
+        result TEXT,
+        tx_hash TEXT,
+        payment_tx TEXT
       );
+
+      -- Add columns to existing tables if they don't exist (for already-deployed DBs)
+      ALTER TABLE decisions ADD COLUMN IF NOT EXISTS tx_hash TEXT;
+      ALTER TABLE decisions ADD COLUMN IF NOT EXISTS payment_tx TEXT;
 
       CREATE TABLE IF NOT EXISTS performance (
         id SERIAL PRIMARY KEY,
@@ -159,10 +165,11 @@ export async function saveDecision(decision: {
   reason: string;
   confidence: number;
   level: string;
+  payment_tx?: string;
 }): Promise<number | null> {
   const result = await query(
-    `INSERT INTO decisions (timestamp, action, asset, amount, reason, confidence, level)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO decisions (timestamp, action, asset, amount, reason, confidence, level, payment_tx)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id`,
     [
       Date.now(),
@@ -172,18 +179,33 @@ export async function saveDecision(decision: {
       decision.reason,
       decision.confidence,
       decision.level,
+      decision.payment_tx || null,
     ]
   );
   return result.rows[0] ? Number(result.rows[0].id) : null;
 }
 
-export async function updateDecisionResult(id: number | null, executed: boolean, result: string): Promise<void> {
+export async function updateDecisionResult(
+  id: number | null,
+  executed: boolean,
+  result: string,
+  tx_hash?: string
+): Promise<void> {
   if (id === null) return;
-  await query('UPDATE decisions SET executed = $1, result = $2 WHERE id = $3', [
-    executed ? 1 : 0,
-    result,
-    id,
-  ]);
+  if (tx_hash) {
+    await query('UPDATE decisions SET executed = $1, result = $2, tx_hash = $3 WHERE id = $4', [
+      executed ? 1 : 0,
+      result,
+      tx_hash,
+      id,
+    ]);
+  } else {
+    await query('UPDATE decisions SET executed = $1, result = $2 WHERE id = $3', [
+      executed ? 1 : 0,
+      result,
+      id,
+    ]);
+  }
 }
 
 // ============ PERFORMANCE ============

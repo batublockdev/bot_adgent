@@ -70,6 +70,7 @@ export interface TradingDecision {
   setupTarget?: string;
   setupSelector?: string;
   setupAddress?: string;
+  paymentTx?: string;  // Hash del pago x402 (USDC on-chain)
 }
 
 export interface AgentContext {
@@ -305,11 +306,13 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
         console.log('[X402] Tiempo:', Date.now() - startedAt, 'ms');
         const paymentResponseHeader = response.headers.get('PAYMENT-RESPONSE')
           || response.headers.get('X-PAYMENT-RESPONSE');
+        let x402PaymentTx: string | undefined;
         if (paymentResponseHeader) {
           try {
             const paymentResponse = decodePaymentResponseHeader(paymentResponseHeader);
             if (paymentResponse.success && paymentResponse.transaction) {
-              console.log('[X402] Hash del pago:', paymentResponse.transaction);
+              x402PaymentTx = paymentResponse.transaction;
+              console.log('[X402] Hash del pago:', x402PaymentTx);
             } else {
               console.warn('[X402] El proveedor no confirmó un pago exitoso en el recibo.');
             }
@@ -337,7 +340,9 @@ export async function makeDecision(ctx: AgentContext): Promise<TradingDecision> 
           console.warn('[X402] La respuesta llegó vacía o sin contenido.');
         }
 
-        return parseDecisionJson(raw, 'x402-DeepSeek', ctx.level);
+        const x402Decision = parseDecisionJson(raw, 'x402-DeepSeek', ctx.level);
+        x402Decision.paymentTx = x402PaymentTx;
+        return x402Decision;
       } catch (error: unknown) {
         const err = error as {
           name?: string;

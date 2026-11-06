@@ -71,13 +71,20 @@ async function getPortfolio(level: 'alto' | 'medio' | 'bajo'): Promise<Portfolio
 
 // ============ EXECUTION ============
 
-async function executeDecision(decision: any, level: 'alto' | 'medio' | 'bajo'): Promise<string> {
+interface ExecutionOutcome {
+  display: string;      // Human-readable string for logs and DB result field
+  success: boolean;
+  txHash?: string;       // On-chain tx hash if executed
+  action?: string;
+}
+
+async function executeDecision(decision: any, level: 'alto' | 'medio' | 'bajo'): Promise<ExecutionOutcome> {
   if (decision.action === 'hold') {
-    return 'Hold — no action needed';
+    return { display: 'Hold — no action needed', success: false };
   }
 
   if (decision.action === 'request_setup') {
-    return `⚠️ NEEDS_SETUP: ${decision.reason}\n   Batu, you need to do this from your wallet.`;
+    return { display: `⚠️ NEEDS_SETUP: ${decision.reason}\n   Batu, you need to do this from your wallet.`, success: false };
   }
 
   console.log(`[LEVEL ${level.toUpperCase()}] Executing: ${decision.action} ${decision.amount || ''} ${decision.tokenIn || ''} → ${decision.tokenOut || ''}`);
@@ -85,9 +92,17 @@ async function executeDecision(decision: any, level: 'alto' | 'medio' | 'bajo'):
   const result = await executeViaMinimalAccount(decision, TOKENS, TOKEN_DECIMALS);
 
   if (result.success) {
-    return `✅ Executed: ${result.action} | TX: ${result.txHash || 'N/A'}`;
+    return {
+      display: `✅ Executed: ${result.action} | TX: ${result.txHash || 'N/A'}`,
+      success: true,
+      txHash: result.txHash,
+      action: result.action,
+    };
   } else {
-    return `❌ Error: ${result.error}`;
+    return {
+      display: `❌ Error: ${result.error}`,
+      success: false,
+    };
   }
 }
 
@@ -167,7 +182,11 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
     }
 
     // Save the final action after automatic holds have been applied.
-    const decisionId = await saveDecision(decision);
+    // Pass payment_tx (x402 payment hash) so it's persisted with the decision.
+    const decisionId = await saveDecision({
+      ...decision,
+      payment_tx: decision.paymentTx,
+    });
 
     const shouldExecute =
       decision.action === 'request_setup' ||
@@ -176,14 +195,14 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
 
     if (shouldExecute) {
       console.log(`\n⚡ Executing...`);
-      const result = await executeDecision(decision, level);
-      console.log(result);
+      const outcome = await executeDecision(decision, level);
+      console.log(outcome.display);
 
-      const executionSucceeded = result.startsWith('✅ Executed:');
-      await updateDecisionResult(decisionId, executionSucceeded, result);
+      const executionSucceeded = outcome.success;
+      await updateDecisionResult(decisionId, executionSucceeded, outcome.display, outcome.txHash);
 
-      // Save trade if executed
-      if (executionSucceeded && !result.includes('NEEDS_APPROVAL') && !result.includes('NEEDS_SETUP') && decision.action !== 'hold') {
+      // Save trade if executed — now with tx_hash
+      if (executionSucceeded && !outcome.display.includes('NEEDS_APPROVAL') && !outcome.display.includes('NEEDS_SETUP') && decision.action !== 'hold') {
         await saveTrade({
           action: decision.action,
           asset: decision.tokenIn || decision.tokenOut || decision.asset,
@@ -191,6 +210,7 @@ async function runCycle(level: 'alto' | 'medio' | 'bajo') {
           level: decision.level,
           reason: decision.reason,
           confidence: decision.confidence,
+          tx_hash: outcome.txHash,  // ✅ Now we pass the real tx hash
         });
       }
     } else if (decision.action !== 'hold') {
